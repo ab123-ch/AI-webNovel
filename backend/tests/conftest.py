@@ -31,3 +31,8 @@ _executor_mock.MAX_CONCURRENT_SUBAGENTS = 3
 _executor_mock.get_background_task_result = MagicMock()
 
 sys.modules["deerflow.subagents.executor"] = _executor_mock
+
+# 添加 src 目录到 Python 路径
+src_path = str(Path(__file__).parent.parent / "src")
+if src_path not in sys.path:
+    sys.path.insert(0, src_path)
