@@ -326,17 +326,175 @@ class MemoryCompaction:
         self,
         messages: list[dict]
     ) -> int:
-        """估算消息 token 数"""
+        """
+        估算消息 token 数
+
+        优先使用 tiktoken 进行精确计算，
+        如果不可用则降级为智能估算
+
+        Args:
+            messages: 消息列表
+
+        Returns:
+            估算的 token 数
+        """
+        import time
+        start_time = time.time()
+
+        logger.debug(f"[MemoryCompaction] 开始估算 token 数量，消息数: {len(messages)}")
+
+        # 尝试使用 tiktoken
+        try:
+            import tiktoken
+            logger.debug("[MemoryCompaction] 使用 tiktoken 进行精确计算")
+            enc = tiktoken.get_encoding("cl100k_base")  # GPT-4 编码
+            total = 0
+            for msg in messages:
+                content = msg.get("content", "")
+                total += len(enc.encode(content))
+
+            elapsed = time.time() - start_time
+            logger.info(
+                f"[MemoryCompaction][tiktoken] Token 估算完成 "
+                f"| 消息数: {len(messages)} "
+                f"| 总 token: {total} "
+                f"| 耗时: {elapsed:.3f}s"
+            )
+            return total
+
+        except ImportError as e:
+            # 降级为智能估算
+            elapsed = time.time() - start_time
+            logger.warning(
+                f"[MemoryCompaction][降级] tiktoken 不可用 "
+                f"| 错误类型: ImportError "
+                f"| 错误信息: {e} "
+                f"| 降级方案: _smart_estimate_messages() "
+                f"| 提示: pip install tiktoken 可获得精确计算 "
+                f"| 耗时: {elapsed:.3f}s"
+            )
+            return self._smart_estimate_messages(messages)
+
+    def _smart_estimate_messages(
+        self,
+        messages: list[dict]
+    ) -> int:
+        """
+        智能 token 估算（降级方案）
+
+        中文字符约 1.5 token，英文约 0.25 token
+        混合内容按比例计算
+
+        Args:
+            messages: 消息列表
+
+        Returns:
+            估算的 token 数
+        """
+        import time
+        start_time = time.time()
+
+        logger.debug("[MemoryCompaction][降级估算] 使用智能估算算法")
+
         total = 0
+        total_chinese = 0
+        total_other = 0
+
         for msg in messages:
             content = msg.get("content", "")
-            # 简单估算：中文约 1.5 字符/token，英文约 4 字符/token
-            total += len(content) // 2
+            # 统计中文字符数量
+            chinese_chars = sum(1 for c in content if '\u4e00' <= c <= '\u9fff')
+            other_chars = len(content) - chinese_chars
+            total_chinese += chinese_chars
+            total_other += other_chars
+            # 中文字符约 1.5 token，英文约 0.25 token
+            total += int(chinese_chars * 1.5 + other_chars * 0.25)
+
+        elapsed = time.time() - start_time
+        logger.info(
+            f"[MemoryCompaction][降级估算] Token 估算完成 "
+            f"| 消息数: {len(messages)} "
+            f"| 中文字符: {total_chinese} "
+            f"| 其他字符: {total_other} "
+            f"| 估算 token: {total} "
+            f"| 系数: 中文1.5 + 英文0.25 "
+            f"| 耗时: {elapsed:.3f}s"
+        )
         return total
 
     def _estimate_text_tokens(
         self,
         text: str
     ) -> int:
-        """估算文本 token 数"""
-        return len(text) // 2
+        """
+        估算文本 token 数
+
+        优先使用 tiktoken 进行精确计算
+
+        Args:
+            text: 文本内容
+
+        Returns:
+            估算的 token 数
+        """
+        import time
+        start_time = time.time()
+
+        logger.debug(f"[MemoryCompaction] 开始估算文本 token，长度: {len(text)}")
+
+        try:
+            import tiktoken
+            logger.debug("[MemoryCompaction] 使用 tiktoken 进行精确计算")
+            enc = tiktoken.get_encoding("cl100k_base")
+            result = len(enc.encode(text))
+
+            elapsed = time.time() - start_time
+            logger.info(
+                f"[MemoryCompaction][tiktoken] 文本 Token 估算完成 "
+                f"| 文本长度: {len(text)} "
+                f"| token 数: {result} "
+                f"| 耗时: {elapsed:.3f}s"
+            )
+            return result
+
+        except ImportError as e:
+            # 降级为智能估算
+            elapsed = time.time() - start_time
+            logger.warning(
+                f"[MemoryCompaction][降级] tiktoken 不可用 "
+                f"| 错误类型: ImportError "
+                f"| 降级方案: _smart_estimate_text() "
+                f"| 耗时: {elapsed:.3f}s"
+            )
+            return self._smart_estimate_text(text)
+
+    def _smart_estimate_text(
+        self,
+        text: str
+    ) -> int:
+        """
+        智能文本 token 估算（降级方案）
+
+        Args:
+            text: 文本内容
+
+        Returns:
+            估算的 token 数
+        """
+        import time
+        start_time = time.time()
+
+        chinese_chars = sum(1 for c in text if '\u4e00' <= c <= '\u9fff')
+        other_chars = len(text) - chinese_chars
+        result = int(chinese_chars * 1.5 + other_chars * 0.25)
+
+        elapsed = time.time() - start_time
+        logger.info(
+            f"[MemoryCompaction][降级估算] 文本 Token 估算完成 "
+            f"| 文本长度: {len(text)} "
+            f"| 中文字符: {chinese_chars} "
+            f"| 其他字符: {other_chars} "
+            f"| 估算 token: {result} "
+            f"| 耗时: {elapsed:.3f}s"
+        )
+        return result

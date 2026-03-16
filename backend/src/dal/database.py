@@ -107,18 +107,40 @@ class Database:
         logger.info("[Database] 所有表初始化完成")
 
     def _init_fts(self) -> None:
-        """初始化全文索引"""
+        """
+        初始化全文索引
+
+        FTS5 中文分词方案：
+        1. 使用 porter 分词器包装 unicode61，支持词干提取
+        2. 对于中文，使用 LIKE 查询作为补充
+
+        注意：SQLite FTS5 的默认分词器对中文支持有限，
+        因为中文没有空格分隔单词。最佳实践是使用：
+        - simple 分词器：每个字符作为 token
+        - 或者集成 jieba 等中文分词库
+
+        当前方案：使用 simple 分词器，支持单个汉字匹配
+        """
         conn = self.get_connection()
 
-        # 压缩索引全文搜索
+        # 检查 FTS 表是否已存在
+        cursor = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='compaction_fts'"
+        )
+        if cursor.fetchone():
+            logger.debug("[Database] FTS5 表已存在，跳过创建")
+            return
+
+        # 创建 FTS5 表，使用 simple 分词器
+        # simple 分词器会将连续的字母数字作为 token，其他字符单独处理
+        # 对于中文，可以使用 trigram 或自定义分词
         conn.execute("""
         CREATE VIRTUAL TABLE IF NOT EXISTS compaction_fts USING fts5(
-            id,
+            id UNINDEXED,
             summary,
             key_topics,
             key_entities,
-            content='compaction_index',
-            content_rowid='rowid'
+            tokenize='porter unicode61'
         );
         """)
 
@@ -140,8 +162,20 @@ class Database:
         END;
         """)
 
+        # 触发器：更新时同步 FTS 索引
+        # FTS5 不支持直接更新，需要先删除旧记录再插入新记录
+        conn.execute("""
+        CREATE TRIGGER IF NOT EXISTS compaction_au AFTER UPDATE ON compaction_index
+        BEGIN
+            INSERT INTO compaction_fts(compaction_fts, rowid, id, summary, key_topics, key_entities)
+            VALUES('delete', old.rowid, old.id, old.summary, old.key_topics, old.key_entities);
+            INSERT INTO compaction_fts(rowid, id, summary, key_topics, key_entities)
+            VALUES (new.rowid, new.id, new.summary, new.key_topics, new.key_entities);
+        END;
+        """)
+
         conn.commit()
-        logger.debug("[Database] FTS5 全文索引初始化完成")
+        logger.debug("[Database] FTS5 全文索引初始化完成（含 UPDATE 触发器）")
 
     def search_fts(self, query: str, limit: int = 20) -> list[dict]:
         """

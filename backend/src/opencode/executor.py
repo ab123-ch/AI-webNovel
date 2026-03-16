@@ -8,6 +8,7 @@ import functools
 import logging
 import os
 import subprocess
+import sys
 import uuid
 from typing import Optional
 
@@ -35,12 +36,17 @@ class OpenCodeExecutor:
     - 处理超时和重试
     - 批量并行执行
     - 带确认的多轮执行
+    - CLI 可用性检查
 
     Example:
         >>> config = OpenCodeConfig(model="glm-4.7")
         >>> executor = OpenCodeExecutor(config)
         >>> result = await executor.execute("帮我写一个修仙小说的开头")
     """
+
+    # 缓存 CLI 可用性状态，避免重复检查
+    _cli_available: Optional[bool] = None
+    _cli_checked: bool = False
 
     def __init__(self, config: Optional[OpenCodeConfig] = None):
         """
@@ -284,6 +290,97 @@ class OpenCodeExecutor:
 
         raise last_error or OpenCodeError("未知错误")
 
+    async def _check_cli_available(self) -> bool:
+        """
+        检查 OpenCode CLI 是否可用
+
+        Returns:
+            CLI 是否可用
+        """
+        import time
+        start_time = time.time()
+
+        # 使用类级别缓存，避免重复检查
+        if OpenCodeExecutor._cli_checked:
+            logger.debug(
+                f"[OpenCodeExecutor][缓存] CLI 可用性已检查 "
+                f"| 结果: {'可用' if OpenCodeExecutor._cli_available else '不可用'}"
+            )
+            return OpenCodeExecutor._cli_available is True
+
+        logger.info("[OpenCodeExecutor] 开始检查 CLI 可用性...")
+
+        try:
+            # Windows 上需要使用 shell=True 来正确解析 .cmd 文件
+            if sys.platform == "win32":
+                proc = await asyncio.create_subprocess_shell(
+                    "opencode --version",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                )
+            else:
+                proc = await asyncio.create_subprocess_exec(
+                    "opencode", "--version",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                )
+            await asyncio.wait_for(proc.wait(), timeout=5)
+
+            OpenCodeExecutor._cli_available = proc.returncode == 0
+            OpenCodeExecutor._cli_checked = True
+
+            elapsed = time.time() - start_time
+
+            if proc.returncode == 0:
+                logger.info(
+                    f"[OpenCodeExecutor][成功] CLI 可用性检查通过 "
+                    f"| 退出码: {proc.returncode} "
+                    f"| 耗时: {elapsed:.3f}s"
+                )
+            else:
+                logger.warning(
+                    f"[OpenCodeExecutor][失败] CLI 返回非零退出码 "
+                    f"| 退出码: {proc.returncode} "
+                    f"| 耗时: {elapsed:.3f}s"
+                )
+
+            return OpenCodeExecutor._cli_available is True
+
+        except FileNotFoundError as e:
+            OpenCodeExecutor._cli_available = False
+            OpenCodeExecutor._cli_checked = True
+            elapsed = time.time() - start_time
+            logger.warning(
+                f"[OpenCodeExecutor][提示] opencode 命令未安装 "
+                f"| 解决方案: pip install opencode "
+                f"| 耗时: {elapsed:.3f}s"
+            )
+            return False
+
+        except asyncio.TimeoutError as e:
+            OpenCodeExecutor._cli_available = False
+            OpenCodeExecutor._cli_checked = True
+            elapsed = time.time() - start_time
+            logger.error(
+                f"[OpenCodeExecutor][错误] CLI 可用性检查超时 "
+                f"| 错误类型: asyncio.TimeoutError "
+                f"| 超时时间: 5s "
+                f"| 耗时: {elapsed:.3f}s"
+            )
+            return False
+
+        except Exception as e:
+            OpenCodeExecutor._cli_available = False
+            OpenCodeExecutor._cli_checked = True
+            elapsed = time.time() - start_time
+            logger.error(
+                f"[OpenCodeExecutor][错误] CLI 检查异常 "
+                f"| 错误类型: {type(e).__name__} "
+                f"| 错误信息: {e} "
+                f"| 耗时: {elapsed:.3f}s"
+            )
+            return False
+
     async def _run_subprocess(self, prompt: str, model: str) -> str:
         """
         执行子进程调用 OpenCode CLI
@@ -299,36 +396,104 @@ class OpenCodeExecutor:
             OpenCodeError: 执行失败
             TimeoutError: 执行超时
         """
-        cmd = ["opencode", "run", "-m", model, "--non-interactive", prompt]
+        import time
+        start_time = time.time()
 
+        # 步骤 1: 检查 CLI 可用性
+        logger.info(f"[OpenCodeExecutor:{self._id}] 开始执行子进程 | model={model}")
+        logger.debug(f"[OpenCodeExecutor:{self._id}] 步骤1: 检查 CLI 可用性")
+
+        if not await self._check_cli_available():
+            elapsed = time.time() - start_time
+            error_msg = (
+                "OpenCode CLI 未安装或不可用。\n"
+                "请运行以下命令安装:\n"
+                "  pip install opencode\n"
+                "或检查 opencode 是否在 PATH 环境变量中。"
+            )
+            logger.error(
+                f"[OpenCodeExecutor:{self._id}][错误] CLI 不可用 "
+                f"| 耗时: {elapsed:.3f}s"
+            )
+            raise OpenCodeError(error_msg, returncode=-1, stderr="CLI not found")
+
+        logger.debug(f"[OpenCodeExecutor:{self._id}] 步骤1完成: CLI 可用")
+
+        # 步骤 2: 构建命令
+        cmd = ["opencode", "run", "-m", model, "--non-interactive", prompt]
         cwd = self.cfg.working_dir or os.getcwd()
 
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=cwd
-            )
+        logger.debug(
+            f"[OpenCodeExecutor:{self._id}] 步骤2: 构建命令 "
+            f"| cmd: opencode run -m {model} --non-interactive [prompt:{len(prompt)} chars]"
+        )
 
+        try:
+            # 步骤 3: 创建子进程
+            # Windows 上需要使用 shell=True 来正确解析 .cmd 文件
+            logger.debug(f"[OpenCodeExecutor:{self._id}] 步骤3: 创建子进程 | cwd={cwd}")
+
+            if sys.platform == "win32":
+                # Windows: 使用 shell 模式解析 .cmd 文件
+                shell_cmd = " ".join(f'"{c}"' if " " in c else c for c in cmd)
+                proc = await asyncio.create_subprocess_shell(
+                    shell_cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=cwd
+                )
+            else:
+                # macOS/Linux: 使用 exec 模式
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=cwd
+                )
+
+            # 步骤 4: 等待执行完成
+            logger.debug(
+                f"[OpenCodeExecutor:{self._id}] 步骤4: 等待执行完成 "
+                f"| timeout={self.cfg.timeout}s"
+            )
             stdout, stderr = await asyncio.wait_for(
                 proc.communicate(),
                 timeout=self.cfg.timeout
             )
 
+            elapsed = time.time() - start_time
+
             if proc.returncode != 0:
                 err_msg = stderr.decode("utf-8", errors="replace")
+                logger.error(
+                    f"[OpenCodeExecutor:{self._id}][失败] 子进程执行失败 "
+                    f"| 退出码: {proc.returncode} "
+                    f"| stderr: {err_msg[:200]}... "
+                    f"| 耗时: {elapsed:.3f}s"
+                )
                 raise OpenCodeError(
                     f"OpenCode 执行失败: {err_msg}",
                     returncode=proc.returncode,
                     stderr=err_msg
                 )
 
-            return stdout.decode("utf-8", errors="replace")
+            result = stdout.decode("utf-8", errors="replace")
+            logger.info(
+                f"[OpenCodeExecutor:{self._id}][成功] 子进程执行完成 "
+                f"| 输出长度: {len(result)} chars "
+                f"| 耗时: {elapsed:.3f}s"
+            )
+            return result
 
         except asyncio.TimeoutError as exc:
+            elapsed = time.time() - start_time
             proc.kill()
             await proc.wait()
+            logger.error(
+                f"[OpenCodeExecutor:{self._id}][超时] 子进程执行超时 "
+                f"| timeout={self.cfg.timeout}s "
+                f"| 耗时: {elapsed:.3f}s"
+            )
             raise TimeoutError(
                 f"OpenCode 执行超时 ({self.cfg.timeout}s)"
             ) from exc

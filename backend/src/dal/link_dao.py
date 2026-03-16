@@ -240,6 +240,36 @@ class TaskMemoryLinkDAO(BaseDAO[TaskMemoryLink]):
         )
         return self.create(model)
 
+    def get_by_signature_prefix(
+        self,
+        prefix: str,
+        limit: int = 10
+    ) -> list[TaskMemoryLink]:
+        """
+        按签名前缀查询
+
+        使用 SQL LIKE 查询替代内存筛选，提高大数据量时的性能
+
+        Args:
+            prefix: 签名前缀
+            limit: 返回数量限制
+
+        Returns:
+            匹配的关联记录列表
+
+        Example:
+            >>> links = dao.get_by_signature_prefix("a1b2c3d4", limit=10)
+        """
+        sql = """
+        SELECT * FROM task_memory_link
+        WHERE task_signature LIKE ?
+        ORDER BY relevance_score DESC, recall_count DESC
+        LIMIT ?
+        """
+        conn = self.get_connection()
+        cursor = conn.execute(sql, (f"{prefix}%", limit))
+        return [self._row_to_model(row) for row in cursor.fetchall()]
+
     def _row_to_model(self, row: sqlite3.Row) -> TaskMemoryLink:
         """将数据库行转换为模型"""
         return TaskMemoryLink(

@@ -257,22 +257,8 @@ class TaskMemoryLinker:
         """
         prefix = task_signature[:prefix_len]
 
-        # 获取所有关联（简单实现）
-        all_links = self.dao.list(limit=200)
-
-        # 筛选前缀匹配的
-        matched = [
-            link for link in all_links
-            if link.task_signature.startswith(prefix)
-        ]
-
-        # 按相关性和召回次数排序
-        matched.sort(
-            key=lambda x: (x.relevance_score, x.recall_count),
-            reverse=True
-        )
-
-        return matched[:limit]
+        # 使用 DAO 层的前缀查询方法（SQL LIKE 查询）
+        return self.dao.get_by_signature_prefix(prefix, limit)
 
     def increment_recall(
         self,

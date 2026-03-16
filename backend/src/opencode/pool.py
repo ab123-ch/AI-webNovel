@@ -26,6 +26,7 @@ class OpenCodePool:
 
     _instance: Optional["OpenCodePool"] = None
     _executors: dict[str, OpenCodeExecutor]
+    _initialized: bool  # 初始化标志
 
     def __new__(cls, config: Optional[OpenCodeConfig] = None) -> "OpenCodePool":
         """
@@ -38,10 +39,9 @@ class OpenCodePool:
             OpenCodePool 实例
         """
         if cls._instance is None:
-            cls._instance = super().__new__(cls)
-            cls._instance._executors = {}
-            cls._instance._config = config or OpenCodeConfig()
-            logger.info("[OpenCodePool] 初始化连接池")
+            instance = super().__new__(cls)
+            instance._initialized = False  # 初始化标志
+            cls._instance = instance
         return cls._instance
 
     def __init__(self, config: Optional[OpenCodeConfig] = None):
@@ -51,9 +51,14 @@ class OpenCodePool:
         Args:
             config: 配置对象，仅首次创建时使用
         """
-        # 单例模式下，__init__ 会被多次调用
-        # 实际初始化在 __new__ 中完成
-        pass
+        # 使用 _initialized 标志避免重复初始化
+        if self._initialized:
+            return
+
+        self._executors = {}
+        self._config = config or OpenCodeConfig()
+        self._initialized = True
+        logger.info("[OpenCodePool] 初始化连接池")
 
     def get_executor(
         self,

@@ -203,11 +203,44 @@ class TestIndexManager:
         from src.memory.index_manager import IndexManager
 
         mock_dao = MagicMock()
-        mock_dao.list = MagicMock(return_value=[])
+        # 新实现直接调用 dao.search_fts()
+        mock_dao.search_fts = MagicMock(return_value=[])
 
         manager = IndexManager(mock_dao)
         results = manager.search_fts("测试")
         assert results == []
+        # 验证调用了正确的 DAO 方法
+        mock_dao.search_fts.assert_called_once_with("测试", 20)
+
+    def test_search_fts_with_results(self):
+        """测试有结果的搜索"""
+        from src.memory.index_manager import IndexManager
+        from src.dal.compaction_dao import CompactionIndex
+
+        mock_dao = MagicMock()
+        mock_index = CompactionIndex(
+            id="idx-001",
+            session_id="sess-001",
+            layer=1,
+            source_memory_ids=["m1", "m2"],
+            summary="测试摘要",
+            key_topics=["测试"],
+            key_decisions=[],
+            key_entities=[],
+            key_conclusions=[],
+            original_token_count=100,
+            compressed_token_count=50,
+            compression_ratio=0.5,
+            created_at=1234567890
+        )
+        mock_dao.search_fts = MagicMock(return_value=[mock_index])
+
+        manager = IndexManager(mock_dao)
+        results = manager.search_fts("测试", limit=10)
+
+        assert len(results) == 1
+        assert results[0].id == "idx-001"
+        mock_dao.search_fts.assert_called_once_with("测试", 10)
 
 
 class TestTaskMemoryLinker:

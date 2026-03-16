@@ -94,6 +94,8 @@ class IndexManager:
         """
         全文搜索
 
+        使用 FTS5 进行高效的全文搜索
+
         Args:
             query: 搜索查询
             limit: 返回数量限制
@@ -106,39 +108,8 @@ class IndexManager:
             >>> for idx in results:
             ...     print(f"{idx.summary} (score={idx.compression_ratio:.2%})")
         """
-        # TODO: 实现真正的 FTS5 搜索
-        # 目前使用简单的关键词匹配
-        all_indexes = self.dao.list(limit=200)
-
-        query_lower = query.lower()
-        results: list[tuple[CompactionIndex, float]] = []
-
-        for index in all_indexes:
-            # 计算匹配分数
-            score = 0.0
-            all_text = (
-                index.summary +
-                " ".join(index.key_topics) +
-                " ".join(index.key_entities) +
-                " ".join(index.key_decisions)
-            ).lower()
-
-            # 简单的关键词匹配
-            for word in query_lower.split():
-                if word in all_text:
-                    score += 1.0
-
-            if score > 0:
-                results.append((index, score))
-
-        # 按分数排序
-        results.sort(key=lambda x: x[1], reverse=True)
-
-        logger.debug(
-            f"[IndexManager] FTS 搜索: query='{query}', found={len(results)}"
-        )
-
-        return [r[0] for r in results[:limit]]
+        # 直接使用 DAO 层的 FTS5 搜索方法
+        return self.dao.search_fts(query, limit)
 
     def delete_index(
         self,

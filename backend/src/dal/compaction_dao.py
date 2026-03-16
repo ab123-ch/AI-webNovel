@@ -92,13 +92,13 @@ class CompactionIndexDAO(BaseDAO[CompactionIndex]):
             model.id,
             model.session_id,
             model.layer,
-            json.dumps(model.source_memory_ids),
-            json.dumps(model.source_compaction_ids) if model.source_compaction_ids else None,
+            json.dumps(model.source_memory_ids, ensure_ascii=False),
+            json.dumps(model.source_compaction_ids, ensure_ascii=False) if model.source_compaction_ids else None,
             model.summary,
-            json.dumps(model.key_topics),
-            json.dumps(model.key_decisions),
-            json.dumps(model.key_entities),
-            json.dumps(model.key_conclusions),
+            json.dumps(model.key_topics, ensure_ascii=False),
+            json.dumps(model.key_decisions, ensure_ascii=False),
+            json.dumps(model.key_entities, ensure_ascii=False),
+            json.dumps(model.key_conclusions, ensure_ascii=False),
             model.task_type,
             model.task_description,
             model.original_token_count,
@@ -129,10 +129,10 @@ class CompactionIndexDAO(BaseDAO[CompactionIndex]):
         """
         self.execute(sql, (
             model.summary,
-            json.dumps(model.key_topics),
-            json.dumps(model.key_decisions),
-            json.dumps(model.key_entities),
-            json.dumps(model.key_conclusions),
+            json.dumps(model.key_topics, ensure_ascii=False),
+            json.dumps(model.key_decisions, ensure_ascii=False),
+            json.dumps(model.key_entities, ensure_ascii=False),
+            json.dumps(model.key_conclusions, ensure_ascii=False),
             model.id
         ))
         return model
@@ -206,6 +206,154 @@ class CompactionIndexDAO(BaseDAO[CompactionIndex]):
             "memory_ids": index.source_memory_ids,
             "compaction_ids": index.source_compaction_ids or []
         }
+
+    def search_fts(
+        self,
+        query: str,
+        limit: int = 20
+    ) -> list[CompactionIndex]:
+        """
+        全文搜索
+
+        使用 SQL LIKE 查询进行中文友好的全文搜索
+        支持中英文混合搜索
+
+        Args:
+            query: 搜索关键词（多个关键词用空格分隔）
+            limit: 返回数量限制
+
+        Returns:
+            匹配的压缩索引列表，按相关性排序
+
+        Example:
+            >>> results = dao.search_fts("修仙 境界", limit=10)
+        """
+        import time
+        start_time = time.time()
+
+        logger.info(f"[CompactionIndexDAO] 开始全文搜索: query='{query}', limit={limit}")
+
+        conn = self.get_connection()
+        keywords = query.split()
+
+        # 使用 SQL LIKE 查询进行中文友好的搜索
+        # 构建 WHERE 子句：每个关键词匹配 summary、key_topics 或 key_entities
+        conditions = []
+        params = []
+
+        for kw in keywords:
+            like_pattern = f"%{kw}%"
+            conditions.append("(summary LIKE ? OR key_topics LIKE ? OR key_entities LIKE ? OR key_decisions LIKE ?)")
+            params.extend([like_pattern, like_pattern, like_pattern, like_pattern])
+
+        # 所有关键词都必须匹配（AND 逻辑）
+        where_clause = " AND ".join(conditions)
+
+        sql = f"SELECT * FROM compaction_index WHERE {where_clause} ORDER BY created_at DESC LIMIT ?"
+        params.append(limit)
+
+        logger.debug(f"[CompactionIndexDAO] 执行 LIKE 查询，关键词数: {len(keywords)}")
+
+        try:
+            logger.debug(f"[CompactionIndexDAO] 执行 SQL: {sql.strip()}")
+            logger.debug(f"[CompactionIndexDAO] 参数: {params}")
+            cursor = conn.execute(sql, tuple(params))
+            rows = cursor.fetchall()
+            logger.debug(f"[CompactionIndexDAO] LIKE 查询返回行数: {len(rows)}")
+
+            # 计算匹配分数
+            results_with_scores: list[tuple[CompactionIndex, float]] = []
+            for row in rows:
+                index = self._row_to_model(row)
+                # 计算匹配分数
+                all_text = (
+                    index.summary +
+                    " ".join(index.key_topics) +
+                    " ".join(index.key_entities) +
+                    " ".join(index.key_decisions)
+                ).lower()
+
+                score = sum(1.0 for kw in keywords if kw.lower() in all_text)
+                results_with_scores.append((index, score))
+
+            # 按分数排序
+            results_with_scores.sort(key=lambda x: x[1], reverse=True)
+            results = [r[0] for r in results_with_scores[:limit]]
+
+            elapsed = time.time() - start_time
+            logger.info(
+                f"[CompactionIndexDAO][成功] 全文搜索完成 "
+                f"| query='{query}' "
+                f"| found={len(results)} "
+                f"| 耗时: {elapsed:.3f}s"
+            )
+            return results
+
+        except Exception as e:
+            elapsed = time.time() - start_time
+            logger.error(
+                f"[CompactionIndexDAO][错误] 全文搜索失败 "
+                f"| 错误类型: {type(e).__name__} "
+                f"| 错误信息: {e} "
+                f"| 耗时: {elapsed:.3f}s"
+            )
+            return []
+
+    def _fallback_search(
+        self,
+        query: str,
+        limit: int = 20
+    ) -> list[CompactionIndex]:
+        """
+        降级搜索方法（当 FTS5 不可用时使用）
+
+        Args:
+            query: 搜索关键词
+            limit: 返回数量限制
+
+        Returns:
+            匹配的压缩索引列表
+        """
+        import time
+        start_time = time.time()
+
+        logger.info(f"[CompactionIndexDAO][降级搜索] 开始内存匹配搜索: query='{query}'")
+
+        keywords = query.lower().split()
+        logger.debug(f"[CompactionIndexDAO][降级搜索] 关键词列表: {keywords}")
+
+        # 获取所有索引
+        all_indexes = self.list(limit=200)
+        logger.debug(f"[CompactionIndexDAO][降级搜索] 加载索引数量: {len(all_indexes)}")
+
+        results: list[tuple[CompactionIndex, float]] = []
+        for index in all_indexes:
+            # 计算匹配分数
+            all_text = (
+                index.summary +
+                " ".join(index.key_topics) +
+                " ".join(index.key_entities) +
+                " ".join(index.key_decisions)
+            ).lower()
+
+            score = sum(1.0 for kw in keywords if kw in all_text)
+            if score > 0:
+                results.append((index, score))
+
+        # 按分数排序
+        results.sort(key=lambda x: x[1], reverse=True)
+        final_results = [r[0] for r in results[:limit]]
+
+        elapsed = time.time() - start_time
+        logger.info(
+            f"[CompactionIndexDAO][降级搜索] 完成 "
+            f"| 候选数量: {len(all_indexes)} "
+            f"| 匹配数量: {len(results)} "
+            f"| 返回数量: {len(final_results)} "
+            f"| 耗时: {elapsed:.3f}s"
+        )
+
+        return final_results
 
     def _row_to_model(self, row: sqlite3.Row) -> CompactionIndex:
         """将数据库行转换为模型"""

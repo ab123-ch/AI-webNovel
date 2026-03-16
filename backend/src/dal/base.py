@@ -58,12 +58,26 @@ class BaseDAO(ABC, Generic[T]):
         """
         获取数据库连接
 
+        启用 WAL 模式和适当的超时配置以提高并发性能
+
         Returns:
             SQLite 连接对象
         """
         if self._conn is None:
-            self._conn = sqlite3.connect(self.db_path)
+            self._conn = sqlite3.connect(
+                self.db_path,
+                timeout=30.0,  # 增加超时，避免并发锁等待
+                check_same_thread=False,  # 允许跨线程（配合锁使用）
+                cached_statements=100  # 缓存语句数量
+            )
             self._conn.row_factory = sqlite3.Row
+            # 启用 WAL 模式提高并发读写性能
+            self._conn.execute("PRAGMA journal_mode=WAL")
+            # 设置繁忙超时（毫秒）
+            self._conn.execute("PRAGMA busy_timeout=30000")
+            # 启用外键约束
+            self._conn.execute("PRAGMA foreign_keys = ON")
+            logger.debug(f"[{self.table_name}] 数据库连接已建立 | WAL模式 | busy_timeout=30000ms")
         return self._conn
 
     def close(self) -> None:

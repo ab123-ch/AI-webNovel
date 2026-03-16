@@ -140,27 +140,24 @@ class MemoryReview:
         # 构建搜索查询
         query = " ".join(keywords)
 
-        # 使用全文搜索
-        # TODO: 实现实际的 FTS 搜索
-        # 目前使用简单的 LIKE 搜索
-        all_indexes = self.compaction_dao.list(limit=100)
+        # 使用 DAO 层的 FTS5 全文搜索
+        matched_indexes = self.compaction_dao.search_fts(query, limit=limit * 2)
 
         results: list[dict] = []
-        for index in all_indexes:
-            # 计算匹配分数
+        for index in matched_indexes:
+            # 计算匹配分数（用于排序）
             score = self._calculate_keyword_score(index, keywords)
-            if score > 0:
-                results.append({
-                    "id": index.id,
-                    "type": "compaction",
-                    "layer": index.layer,
-                    "summary": index.summary,
-                    "key_topics": index.key_topics,
-                    "key_entities": index.key_entities,
-                    "relevance_score": score,
-                    "recall_count": 0,
-                    "created_at": index.created_at
-                })
+            results.append({
+                "id": index.id,
+                "type": "compaction",
+                "layer": index.layer,
+                "summary": index.summary,
+                "key_topics": index.key_topics,
+                "key_entities": index.key_entities,
+                "relevance_score": max(score, 0.5),  # FTS 匹配的至少有 0.5 分
+                "recall_count": 0,
+                "created_at": index.created_at
+            })
 
         # 按分数排序
         results.sort(key=lambda x: x["relevance_score"], reverse=True)
