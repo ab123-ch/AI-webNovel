@@ -154,11 +154,11 @@ class Database:
         """)
 
         # 触发器：删除时更新 FTS
+        # 使用标准 DELETE 语法（FTS5 特殊删除语法在某些版本中不稳定）
         conn.execute("""
         CREATE TRIGGER IF NOT EXISTS compaction_ad AFTER DELETE ON compaction_index
         BEGIN
-            INSERT INTO compaction_fts(compaction_fts, rowid, id, summary, key_topics, key_entities)
-            VALUES('delete', old.rowid, old.id, old.summary, old.key_topics, old.key_entities);
+            DELETE FROM compaction_fts WHERE id = old.id;
         END;
         """)
 
@@ -167,8 +167,7 @@ class Database:
         conn.execute("""
         CREATE TRIGGER IF NOT EXISTS compaction_au AFTER UPDATE ON compaction_index
         BEGIN
-            INSERT INTO compaction_fts(compaction_fts, rowid, id, summary, key_topics, key_entities)
-            VALUES('delete', old.rowid, old.id, old.summary, old.key_topics, old.key_entities);
+            DELETE FROM compaction_fts WHERE id = old.id;
             INSERT INTO compaction_fts(rowid, id, summary, key_topics, key_entities)
             VALUES (new.rowid, new.id, new.summary, new.key_topics, new.key_entities);
         END;
